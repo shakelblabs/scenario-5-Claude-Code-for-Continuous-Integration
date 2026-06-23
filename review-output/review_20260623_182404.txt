@@ -1,0 +1,323 @@
+--- PASS 1: Per-File Review ---
+
+Reviewing: src/auth/login.js
+---
+File: auth/login.js
+Line: 9
+Severity: Critical
+Issue: SQL injection — `email` is interpolated directly into the query string.
+Fix: Use a parameterized query: `db.query('SELECT * FROM users WHERE email = $1', [email])`.
+
+File: auth/login.js
+Line: 12
+Severity: Critical
+Issue: Null dereference — `user.rows[0]` is undefined when no user matches, so `.password` throws.
+Fix: Guard first: `if (user.rows[0] && ...)`, returning 401 when `user.rows[0]` is falsy.
+
+File: auth/login.js
+Line: 12
+Severity: Critical
+Issue: Plaintext password comparison instead of a hashed comparison.
+Fix: Store bcrypt hashes and compare with `await bcrypt.compare(password, user.rows[0].password)`.
+
+File: auth/login.js
+Line: 15
+Severity: Critical
+Issue: JWT is signed with no expiry, so issued tokens never become invalid.
+Fix: Add an expiry option: `jwt.sign({ userId: user.rows[0].id }, process.env.JWT_SECRET, { expiresIn: '1h' })`.
+
+File: auth/login.js
+Line: 5
+Severity: Critical
+Issue: Unhandled promise rejection — `await db.query(...)` can reject and there is no try/catch, crashing the handler.
+Fix: Wrap the body in `try/catch` and respond with `res.status(500)` on error.
+
+File: auth/login.js
+Line: 6
+Severity: Major
+Issue: Missing input validation — `email`/`password` may be undefined when absent from the request body.
+Fix: Validate both fields before querying: `if (!email || !password) return res.status(400).json({ error: 'Missing credentials' });`.
+
+Reviewing: src/middleware/authMiddleware.js
+---
+File: middleware/authMiddleware.js
+Line: 5
+Severity: Major
+Issue: The `Authorization` header is passed to `jwt.verify` without stripping the `Bearer ` prefix, so any standard `Bearer <token>` header fails verification and every authenticated request is rejected with 401.
+Fix: Extract the token before verifying, e.g. `const token = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');` and return 401 early if it is empty.
+
+File: middleware/authMiddleware.js
+Line: 14
+Severity: Major
+Issue: The catch block treats all exceptions as authentication failures, so server-side errors (e.g. a missing/undefined `JWT_SECRET`) are masked as 401 instead of surfacing as 500, hiding real misconfiguration.
+Fix: Distinguish token errors from server errors — return 401 only for `JsonWebTokenError`/`TokenExpiredError` and pass other errors on with `next(err)`.
+
+---
+
+Note: The remaining listed criteria (SQL injection, null/undefined dereference, unhandled promise rejection, plaintext passwords, missing auth, hardcoded secrets, DB pool config) do not apply to this file. JWT-expiry checks also don't apply here — `expiresIn` is set at **signing** time, not in this verification middleware. The secret is correctly read from `process.env`, not hardcoded.
+
+Reviewing: src/db/connection.js
+---
+File: db/connection.js
+Line: 4-13
+Severity: Major
+Issue: The connection pool sets no `max`, so unbounded connection growth under load can exhaust the database's connection limit.
+Fix: Add `max: 20` (or an env-tuned value) to the Pool config to cap concurrent connections.
+
+File: db/connection.js
+Line: 4-13
+Severity: Major
+Issue: No `idleTimeoutMillis` is configured, so idle connections are never released back to the OS/DB.
+Fix: Add `idleTimeoutMillis: 30000` to the Pool config.
+
+File: db/connection.js
+Line: 4-13
+Severity: Major
+Issue: No `connectionTimeoutMillis` is set, so attempts to acquire a connection hang indefinitely when the DB is unreachable.
+Fix: Add `connectionTimeoutMillis: 5000` to the Pool config.
+
+File: db/connection.js
+Line: 16
+Severity: Major
+Issue: No `pool.on('error', ...)` handler, so an error emitted by an idle client crashes the process with an unhandled exception.
+Fix: Add `pool.on('error', (err) => { console.error('Unexpected idle client error', err); });` before exporting the pool.
+
+Reviewing: src/routes/userRoutes.js
+---
+File: routes/userRoutes.js
+Line: 8-11
+Severity: Critical
+Issue: The async route handler has no try/catch, so a rejected `userService.getUser` promise becomes an unhandled rejection that can crash the process.
+Fix: Wrap the body in try/catch and call `res.status(500).json(...)` on error, or pass errors to `next(err)` with an Express error-handling middleware.
+
+File: routes/userRoutes.js
+Line: 10
+Severity: Major
+Issue: `user` is returned without checking for null, so a missing record silently returns `200` with a `null` body instead of a `404`.
+Fix: `if (!user) return res.status(404).json({ error: 'User not found' });` before `res.json(user)`.
+
+File: routes/userRoutes.js
+Line: 15-18
+Severity: Critical
+Issue: The DELETE handler only checks authentication, not authorization, so any logged-in user can delete any other user's account.
+Fix: Verify ownership/role before deleting, e.g. `if (req.user.id !== req.params.id && !req.user.isAdmin) return res.status(403).json({ error: 'Forbidden' });`.
+
+File: routes/userRoutes.js
+Line: 15-18
+Severity: Critical
+Issue: The DELETE handler is async with no try/catch, so a rejected `userService.deleteUser` promise becomes an unhandled rejection.
+Fix: Wrap the await in try/catch and respond with an error status, or forward to `next(err)`.
+
+File: routes/userRoutes.js
+Line: 22-25
+Severity: Critical
+Issue: The POST handler is async with no try/catch, so a rejected `userService.createUser` promise becomes an unhandled rejection.
+Fix: Wrap the await in try/catch and respond with an error status, or forward to `next(err)`.
+
+Reviewing: src/services/userService.js
+---
+File: services/userService.js
+Line: 19-22
+Severity: Critical
+Issue: `createUser` inserts `data.password` directly into the database in plaintext.
+Fix: Hash the password before insert, e.g. `const hash = await bcrypt.hash(data.password, 12);` then store `hash` in the `password` column.
+
+Reviewing: src/services/emailService.js
+---
+Based on the explicit flag-only criteria, here is my review:
+
+File: services/emailService.js
+Line: 14-21 (sendWelcomeEmail)
+Severity: Major
+Issue: The async function awaits `transporter.sendMail` with no try/catch; since email sends are commonly fire-and-forget by callers, an SMTP failure produces an unhandled promise rejection.
+Fix: Wrap the `await transporter.sendMail(...)` in a try/catch and either log/handle the SMTP error or rethrow a typed error the caller is expected to handle.
+
+File: services/emailService.js
+Line: 27-34 (sendPasswordResetEmail)
+Severity: Major
+Issue: Same unhandled-rejection pattern — `await transporter.sendMail` has no try/catch, so an SMTP failure rejects the returned promise with no local handling.
+Fix: Wrap the `await transporter.sendMail(...)` in a try/catch and handle or rethrow the error explicitly.
+
+---
+
+The remaining annotated "BUGs" do **not** match the flag-only criteria and are intentionally **not** reported:
+
+- **BUG 2 (HTML/XSS escaping):** Not in the allowed criteria list — skipped.
+- **BUG 3 (reset token expiry):** Token generation/expiry is enforced elsewhere; this is not a JWT-without-`expiresIn` case and the token isn't created in this file — skipped.
+- **BUG 4 (email validation):** Input validation is outside the explicit flag-only list — skipped.
+
+Also confirmed clean: credentials come from `process.env` (no hardcoded secrets), and there is no SQL, auth route, password comparison, or DB pool config in this file.
+
+Reviewing: src/config/config.js
+---
+File: config/config.js
+Line: 3
+Severity: Critical
+Issue: JWT signing secret falls back to a hardcoded value (`'secret123'`) when `JWT_SECRET` is unset, allowing token forgery if the env var is missing in production.
+Fix: Remove the fallback and fail fast — `jwtSecret: process.env.JWT_SECRET` with a startup guard `if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is required');`
+
+---
+
+Per your explicit "flag ONLY these" list, that is the only qualifying finding. Two notes on items I deliberately did **not** flag as findings, so the omission is intentional rather than an oversight:
+
+- **Line 18 (`corsOrigin: '*'`)** — not in the eight criteria you listed, so skipped. (It *is* a Major item under CLAUDE.md's broader standards if you want it included.)
+- **Line 14 (`debug: true`)** and the unvalidated `DATABASE_URL` (line 6) — config hardening concerns, not any of the listed bug classes.
+
+Reviewing: src/models/User.js
+---
+File: models/User.js
+Line: 18
+Severity: Major
+Issue: `toJSON()` returns the `password` field, so `JSON.stringify` on any User instance exposes the stored password in API responses.
+Fix: Remove `password: this.password` from the object returned by `toJSON()` so the password is never serialized.
+
+Reviewing: src/jobs/cleanupJob.js
+---
+No findings.
+
+None of the in-scope categories (SQL injection, null/undefined dereference, unhandled promise rejection, plaintext passwords, missing auth, JWT expiry, hardcoded secrets, DB pool config) are present in this file:
+
+- The `DELETE` query is a static string with no interpolation — not SQL injection.
+- `result.rowCount` comes from a resolved `db.query` result; no unguarded dereference.
+- The async function is fully wrapped in `try/catch/finally` — no unhandled rejection.
+
+The three issues flagged in the code's own comments — the non-atomic `isRunning` race, the swallowed error in the catch block, and parallel execution across workers — are real, but all fall outside the explicit flag list you gave (they're "race conditions" / "silent error handlers," which this review scope excludes). Per the "flag ONLY these" constraint, I'm not reporting them.
+
+Reviewing: src/utils/pagination.js
+---
+File: utils/pagination.js
+Line: 11
+Severity: Critical
+Issue: `buildSortClause` interpolates `field` and `direction` directly into the SQL string, allowing SQL injection via the sort parameters.
+Fix: Whitelist allowed column names and directions, e.g. `const col = ALLOWED_COLUMNS[field]; const dir = direction.toLowerCase() === 'desc' ? 'DESC' : 'ASC'; if (!col) throw new Error('invalid sort field'); return \`ORDER BY ${col} ${dir}\`;` — never interpolate raw user input.
+
+File: utils/pagination.js
+Line: 4
+Severity: Major
+Issue: `page` and `pageSize` are used without validation, so a NaN, zero, or negative `page` produces a negative/NaN `offset`, yielding invalid SQL OFFSET.
+Fix: Coerce and clamp before use, e.g. `const p = Math.max(1, parseInt(page, 10) || 1); const size = Math.max(1, Math.min(100, parseInt(pageSize, 10) || 20)); const offset = (p - 1) * size;`.
+
+Reviewing: src/tests/unit/userService.test.js
+---
+No findings.
+
+This is a test file with a mocked DB (`jest.mock('../../db/connection')`), so none of the explicit criteria apply: there's no SQL string interpolation (queries are mocked), no unguarded null deref in production code, no auth routes, no JWT, no real DB pool, and no hardcoded secret. The `'plaintext'` value is a test fixture input, not stored or compared as a credential.
+
+The three `// BUG` comments in the file describe **missing test coverage** (no test for not-found, DB error, or hash verification). That is a real gap, but it falls outside the "flag ONLY these" list you gave (it's test-quality, not a runtime bug), so I'm not reporting it as a finding. If you do want test-coverage gaps included, say so and I'll list them.
+
+Reviewing: src/tests/integration/auth.test.js
+---
+No findings.
+
+None of the annotated comments match the explicit review criteria for a real bug:
+
+- **BUG 1 (hardcoded credentials):** These are dummy test fixtures (`admin@example.com` / `password123`), not real secrets or credentials posing a disclosure risk. "Hardcoded secrets in source code" targets actual live secrets; fake test inputs don't qualify.
+- **BUG 2 (doesn't verify JWT claims):** This is a test-completeness/assertion-strength gap, not any of the listed bug classes (no missing JWT expiry in *production* code is shown here).
+- **BUG 3 (no test for missing body fields):** Missing test coverage — explicitly outside the criteria (and would be a refactoring/quality note, not a real bug).
+
+The file under review is test code; it contains no SQL queries, no auth route logic, no DB pool config, no async handlers, and no real secrets — so none of the eight criteria apply.
+
+Reviewing: src/types/index.js
+---
+File: types/index.js
+Line: 7
+Severity: Major
+Issue: `password` is declared as a property of `UserPayload`, the type used for API responses, which documents/encourages leaking the password hash to clients.
+Fix: Remove `password` from `UserPayload`; if a type is needed for the DB row, define a separate internal `UserRecord` typedef and strip `password` before returning user objects in responses.
+
+File: types/index.js
+Line: 16
+Severity: Minor
+Issue: `PaginatedResponse` omits `pageSize` and `totalPages`, so consumers cannot compute the last page or page boundaries.
+Fix: Add `@property {number} pageSize` and `@property {number} totalPages` to the typedef and populate them in paginated responses.
+
+File: types/index.js
+Line: 22
+Severity: Minor
+Issue: `ApiError` exposes only a human-readable `error` string with no machine-readable field, so clients cannot branch on error type programmatically.
+Fix: Add `@property {string} code` and `@property {number} statusCode` to the `ApiError` typedef and include them in error responses.
+
+Reviewing: src/scripts/seedDb.js
+---
+File: scripts/seedDb.js
+Line: 10
+Severity: Critical
+Issue: Admin password `admin123` is hardcoded in source code.
+Fix: Read the seed password from an environment variable (e.g. `process.env.SEED_ADMIN_PASSWORD`) and fail if it is unset.
+
+File: scripts/seedDb.js
+Line: 10
+Severity: Critical
+Issue: Password is inserted as plaintext instead of a bcrypt hash.
+Fix: `const hash = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD, 12);` then insert `hash` as the password value.
+
+File: scripts/seedDb.js
+Line: 9
+Severity: Major
+Issue: `seed()` runs an `await db.query` with no try/catch; a query rejection is only caught at the top-level `.catch(console.error)`, which logs but still calls `process.exit(0)` is never reached — failures are silently logged with a success-style exit path bypassed (the bigger risk: any future awaited value here is unguarded).
+Fix: Wrap the body in try/catch, log the error, and `process.exit(1)` on failure so CI/seed scripts surface non-zero exit codes.
+
+---
+
+Note on the inline `// BUG 3` comment: the query on line 10 is **not** a real SQL injection. It is a static template literal with no interpolated variables or user input — every value is a hardcoded literal, so there is no injection vector. Parameterizing it is still good practice (and required to pass the bcrypt hash in), but I did not flag it as an injection bug because that would be a false positive against the stated criteria.
+
+I also did not flag `process.exit(0)` before the DB connection closes (the `// BUG 5` comment): it falls under code-quality/cleanup, not the explicit criteria you listed, so per "flag ONLY these" I left it out. Say the word if you want minor findings included too.
+
+
+--- PASS 2: Cross-File Architectural Review ---
+
+File: src/models/User.js
+Line: 16-24 (toJSON), 6 (constructor)
+Severity: Critical
+Issue: The `password` field is carried end-to-end through the contract: the `UserPayload` type declares it, `User.toJSON()` serializes it, and `userService.getUser/createUser/listUsers` return raw `rows[0]`/`rows` (including the password column) which `userRoutes` passes straight to `res.json(...)`. Every user-facing API response leaks password hashes.
+AffectedFiles: src/types/index.js, src/models/User.js, src/services/userService.js, src/routes/userRoutes.js
+Fix: Remove `password` from `UserPayload` and from `User.toJSON()`, and have `userService` SELECT explicit non-secret columns (or map rows through `new User(...).toJSON()`) before returning to routes.
+
+File: src/middleware/authMiddleware.js
+Line: 6
+Severity: Critical
+Issue: Auth token format mismatch across the issue/verify boundary. `login.js` returns a bare JWT and the integration test treats it as such, but clients conventionally send `Authorization: Bearer <token>`. The middleware passes the entire header (including any `Bearer ` prefix) to `jwt.verify`, so every protected route in `userRoutes` rejects standard Bearer requests.
+AffectedFiles: src/middleware/authMiddleware.js, src/auth/login.js, src/routes/userRoutes.js
+Fix: Normalize the header before verifying: `const token = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');` and standardize the login response/clients on the `Bearer` scheme.
+
+File: src/routes/userRoutes.js
+Line: 8-12
+Severity: Critical
+Issue: Error-propagation gap. `userService.getUser` (and `createUser`) reject on any DB error, but the route handlers have no try/catch and aren't wrapped in an async error adapter, so a service-layer throw becomes an unhandled promise rejection that crashes the process rather than returning 500.
+AffectedFiles: src/routes/userRoutes.js, src/services/userService.js
+Fix: Wrap each async handler in try/catch (or an `asyncHandler` wrapper) that forwards errors to an Express error middleware returning a 500 `ApiError`.
+
+File: src/routes/userRoutes.js
+Line: 10-12
+Severity: Major
+Issue: Missing-signal propagation. `userService.getUser` returns `undefined` when no row is found instead of signaling not-found, and the route forwards it directly, producing `200 OK` with an empty body — callers expecting a `UserPayload` or a 404 get neither.
+AffectedFiles: src/services/userService.js, src/routes/userRoutes.js
+Fix: Have `getUser` either throw a `NotFoundError` or return null with an explicit contract, and in the route `if (!user) return res.status(404).json({ error: 'User not found' })`.
+
+File: src/routes/userRoutes.js
+Line: 8, 16, 23
+Severity: Major
+Issue: Inconsistent authorization pattern across routes. `GET /:id` and `DELETE /:id` apply `authMiddleware` but `POST /` does not, so user creation is unauthenticated; additionally `DELETE` performs no ownership/role check even though `authMiddleware` populates `req.user` and `User.isAdmin()` exists — any authenticated user can delete any account.
+AffectedFiles: src/routes/userRoutes.js, src/middleware/authMiddleware.js, src/models/User.js
+Fix: Apply `authMiddleware` to `POST /` and add an authorization guard on `DELETE` (e.g. `req.user.id === req.params.id || req.user.role === 'admin'`) before calling the service.
+
+File: src/services/userService.js
+Line: 16-22
+Severity: Critical
+Issue: Password-hashing contract is declared but never honored across layers. `config.bcryptRounds` exists and `seedDb` imports bcrypt, but `createUser` inserts `data.password` verbatim, so the persisted value is plaintext while `login.js` does a plaintext `===` comparison — the whole auth chain silently assumes no hashing.
+AffectedFiles: src/services/userService.js, src/config/config.js, src/auth/login.js, src/scripts/seedDb.js
+Fix: Hash with `bcrypt.hash(data.password, config.bcryptRounds)` in `createUser` (and in `seedDb`), and switch `login.js` to `bcrypt.compare`.
+
+File: src/utils/pagination.js
+Line: 6-12
+Severity: Major
+Issue: Shared `PaginatedResponse` type contradicts the paginator's actual output. The type promises `{ data, total, page }` (and callers need `pageSize`/`totalPages` to find the last page), but `paginate()` returns `{ ...query, limit, offset }` — a different shape with none of the declared fields — so any caller coding to the type breaks.
+AffectedFiles: src/utils/pagination.js, src/types/index.js
+Fix: Make `paginate` (or a wrapping helper) return the typed envelope `{ data, total, page, pageSize, totalPages }`, and extend the `PaginatedResponse` typedef with `pageSize` and `totalPages`.
+
+File: src/types/index.js
+Line: 22-26 (ApiError)
+Severity: Minor
+Issue: The `ApiError` contract defines only `error`, but it's the shared shape every route/middleware returns (`{ error: '...' }`) and the frontend has no `code`/`statusCode` to branch on programmatically — error responses are not machine-handleable across the API surface.
+AffectedFiles: src/types/index.js, src/middleware/authMiddleware.js, src/routes/userRoutes.js
+Fix: Add `code` and `statusCode` to the `ApiError` typedef and include them consistently in all error responses.

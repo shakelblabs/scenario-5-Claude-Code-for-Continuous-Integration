@@ -1,0 +1,297 @@
+==============================================
+  ClaimFlow CI Review Pipeline
+  Files: 14 | Timestamp: 20260623_110000
+==============================================
+
+--- PASS 1: Per-File Review ---
+
+Reviewing: src/auth/login.js
+---
+File: src/auth/login.js
+Line: 8
+Severity: Critical
+Issue: SQL injection — email value is interpolated directly into the query string instead of using a parameterized query.
+Fix: Replace with db.query('SELECT * FROM users WHERE email = $1', [email])
+
+File: src/auth/login.js
+Line: 10
+Severity: Critical
+Issue: Null dereference — user.rows[0] is accessed without checking if the query returned any rows; crashes if email not found.
+Fix: Add guard: if (!user.rows[0]) return res.status(401).json({ error: 'Invalid credentials' })
+
+File: src/auth/login.js
+Line: 12
+Severity: Critical
+Issue: Plaintext password comparison — passwords should be compared using bcrypt.compare(), not direct equality.
+Fix: Replace with: const match = await bcrypt.compare(password, user.rows[0].password)
+
+File: src/auth/login.js
+Line: 14
+Severity: Major
+Issue: JWT token has no expiry — tokens are valid indefinitely, creating a persistent session hijack risk.
+Fix: Add expiresIn: jwt.sign({ userId: ... }, secret, { expiresIn: '1h' })
+
+File: src/auth/login.js
+Line: 6
+Severity: Major
+Issue: No input validation — email and password are used directly without checking they exist or are the correct type.
+Fix: Add early return if (!email || !password) return res.status(400).json({ error: 'Missing fields' })
+
+---
+
+Reviewing: src/middleware/authMiddleware.js
+---
+File: src/middleware/authMiddleware.js
+Line: 5
+Severity: Major
+Issue: Authorization header is used raw without stripping the "Bearer " prefix — jwt.verify() will fail on all valid tokens.
+Fix: const token = req.headers['authorization']?.replace('Bearer ', '')
+
+File: src/middleware/authMiddleware.js
+Line: 9
+Severity: Minor
+Issue: Catch block handles all errors with 401 — a JWT library internal error or DB error is indistinguishable from an invalid token.
+Fix: Check err.name === 'JsonWebTokenError' || 'TokenExpiredError' before returning 401; re-throw others.
+
+---
+
+Reviewing: src/db/connection.js
+---
+File: src/db/connection.js
+Line: 4
+Severity: Major
+Issue: Connection pool has no max limit — under high load, the pool exhausts all available DB connections.
+Fix: Add max: 10 to Pool config
+
+File: src/db/connection.js
+Line: 4
+Severity: Major
+Issue: No idleTimeoutMillis set — idle connections are never released back to the pool.
+Fix: Add idleTimeoutMillis: 30000
+
+File: src/db/connection.js
+Line: 4
+Severity: Major
+Issue: No connectionTimeoutMillis — queries hang indefinitely if the database is unreachable.
+Fix: Add connectionTimeoutMillis: 5000
+
+File: src/db/connection.js
+Line: 13
+Severity: Critical
+Issue: No pool error event handler — an unexpected pool error is an unhandled exception that crashes the Node.js process.
+Fix: Add pool.on('error', (err) => { console.error('Pool error:', err); process.exit(-1); })
+
+---
+
+Reviewing: src/routes/userRoutes.js
+---
+File: src/routes/userRoutes.js
+Line: 9
+Severity: Critical
+Issue: No try/catch around async DB call — an unhandled promise rejection crashes the Express server.
+Fix: Wrap in try/catch and return res.status(500).json({ error: 'Internal server error' }) in catch
+
+File: src/routes/userRoutes.js
+Line: 10
+Severity: Major
+Issue: No null check on user before calling res.json(user) — returns a null/undefined response if user not found.
+Fix: Add if (!user) return res.status(404).json({ error: 'User not found' })
+
+File: src/routes/userRoutes.js
+Line: 17
+Severity: Critical
+Issue: Missing authorization check — any authenticated user can delete any other user's account.
+Fix: Add check: if (req.user.userId !== req.params.id && !req.user.isAdmin) return res.status(403)
+
+---
+
+Reviewing: src/services/userService.js
+---
+File: src/services/userService.js
+Line: 5
+Severity: Major
+Issue: getUser returns undefined silently when no user found — callers receive no signal to distinguish missing vs error.
+Fix: Return null explicitly and document this; callers must check for null.
+
+File: src/services/userService.js
+Line: 10
+Severity: Minor
+Issue: deleteUser performs a no-op silently if the ID doesn't exist — callers can't detect a delete of a non-existent user.
+Fix: Check result.rowCount === 0 and throw or return a signal.
+
+File: src/services/userService.js
+Line: 14
+Severity: Critical
+Issue: Password stored in plaintext — must hash with bcrypt before inserting into the database.
+Fix: const hashed = await bcrypt.hash(data.password, 10); use hashed in INSERT query
+
+File: src/services/userService.js
+Line: 22
+Severity: Major
+Issue: listUsers SELECT * returns password column — all password hashes are exposed in the API response.
+Fix: Use SELECT id, email, name, role, created_at FROM users
+
+---
+
+Reviewing: src/services/emailService.js
+---
+File: src/services/emailService.js
+Line: 12
+Severity: Major
+Issue: sendWelcomeEmail has no try/catch — SMTP failure is an unhandled promise rejection that crashes the caller.
+Fix: Wrap sendMail in try/catch; log and optionally queue for retry.
+
+File: src/services/emailService.js
+Line: 23
+Severity: Major
+Issue: sendPasswordResetEmail does not validate the email param — an invalid email silently passes to the SMTP layer.
+Fix: Add basic email format check: if (!/\S+@\S+\.\S+/.test(email)) throw new Error('Invalid email')
+
+---
+
+Reviewing: src/config/config.js
+---
+File: src/config/config.js
+Line: 3
+Severity: Critical
+Issue: JWT secret has a hardcoded fallback value — if JWT_SECRET env var is unset in production, the app runs with a known insecure secret.
+Fix: Remove fallback: jwtSecret: process.env.JWT_SECRET and throw on startup if undefined.
+
+File: src/config/config.js
+Line: 10
+Severity: Major
+Issue: debug: true is hardcoded regardless of environment — may expose stack traces or verbose logs in production.
+Fix: debug: process.env.NODE_ENV !== 'production'
+
+File: src/config/config.js
+Line: 14
+Severity: Major
+Issue: CORS is set to wildcard '*' with no environment check — this should be locked to specific origins in production.
+Fix: corsOrigin: process.env.NODE_ENV === 'production' ? process.env.ALLOWED_ORIGIN : '*'
+
+---
+
+Reviewing: src/models/User.js
+---
+File: src/models/User.js
+Line: 17
+Severity: Critical
+Issue: toJSON() includes the password field — serializing a User instance in any API response leaks the password hash.
+Fix: Remove password from toJSON() return object.
+
+---
+
+Reviewing: src/jobs/cleanupJob.js
+---
+File: src/jobs/cleanupJob.js
+Line: 7
+Severity: Major
+Issue: Race condition — isRunning flag read and set are non-atomic; two concurrent callers can both pass the check before either sets it.
+Fix: Use a mutex or advisory DB lock instead of an in-process flag.
+
+File: src/jobs/cleanupJob.js
+Line: 21
+Severity: Minor
+Issue: setInterval runs in every worker process if the app is multi-instance — cleanup runs N times in parallel.
+Fix: Use a DB-level advisory lock or a dedicated job scheduler (e.g. pg-boss).
+
+---
+
+Reviewing: src/utils/pagination.js
+---
+File: src/utils/pagination.js
+Line: 3
+Severity: Major
+Issue: page and pageSize have no validation — NaN, zero, or negative values produce invalid SQL OFFSET/LIMIT.
+Fix: Validate and clamp: page = Math.max(1, parseInt(page) || 1); pageSize = Math.min(100, Math.max(1, parseInt(pageSize) || 20))
+
+File: src/utils/pagination.js
+Line: 11
+Severity: Critical
+Issue: SQL injection — field and direction are interpolated directly into the ORDER BY clause with no whitelist check.
+Fix: Whitelist allowed fields and directions before interpolating.
+
+---
+
+Reviewing: src/tests/unit/userService.test.js
+---
+File: src/tests/unit/userService.test.js
+Line: 16
+Severity: Minor
+Issue: No test for the case where getUser returns undefined (user not found) — this code path is untested.
+Fix: Add test: db.query.mockResolvedValue({ rows: [] }); expect(result).toBeUndefined()
+
+File: src/tests/unit/userService.test.js
+Line: 21
+Severity: Minor
+Issue: createUser test does not verify password hashing — plaintext password is passed and the test accepts any response.
+Fix: Assert that bcrypt.hash was called and the stored password !== the input password.
+
+---
+
+Reviewing: src/tests/integration/auth.test.js
+---
+File: src/tests/integration/auth.test.js
+Line: 7
+Severity: Minor
+Issue: Hardcoded real-looking credentials in test file — should use test fixtures or environment variables.
+Fix: Use TEST_USER_EMAIL and TEST_USER_PASSWORD from process.env or a fixtures file.
+
+---
+
+Reviewing: src/scripts/seedDb.js
+---
+File: src/scripts/seedDb.js
+Line: 8
+Severity: Critical
+Issue: Admin credentials hardcoded in source code — password is plaintext and committed to version control.
+Fix: Load credentials from env vars and hash password with bcrypt before inserting.
+
+File: src/scripts/seedDb.js
+Line: 9
+Severity: Major
+Issue: No ON CONFLICT handling — re-running the seed script creates duplicate admin users.
+Fix: Use INSERT ... ON CONFLICT (email) DO NOTHING
+
+File: src/scripts/seedDb.js
+Line: 14
+Severity: Minor
+Issue: process.exit(0) called before the DB pool is closed — may interrupt in-flight queries.
+Fix: Call await pool.end() before process.exit()
+
+---
+
+--- PASS 2: Cross-File Architectural Review ---
+
+File: src/routes/userRoutes.js
+Line: 9
+Severity: Critical
+Issue: Error propagation gap — userService functions throw on DB errors, but route handlers have no try/catch; unhandled rejections crash the server.
+AffectedFiles: src/routes/userRoutes.js, src/services/userService.js
+Fix: Wrap all async route handlers in try/catch or use an express-async-errors wrapper.
+
+File: src/models/User.js
+Line: 17
+Severity: Critical
+Issue: API contract mismatch — User.toJSON() exposes the password field, and userService.listUsers returns raw DB rows (also with password); both paths leak credentials.
+AffectedFiles: src/models/User.js, src/services/userService.js, src/routes/userRoutes.js
+Fix: Enforce a single safe serialization layer — either fix toJSON() or add a DTO transform in the route layer; do both.
+
+File: src/types/index.js
+Line: 4
+Severity: Major
+Issue: UserPayload type includes password, which propagates the assumption that password is a safe-to-share field across the codebase.
+AffectedFiles: src/types/index.js, src/models/User.js, src/services/userService.js
+Fix: Remove password from UserPayload typedef; add a separate InternalUserRecord type for DB-layer use only.
+
+File: src/config/config.js
+Line: 3
+Severity: Critical
+Issue: Hardcoded JWT secret fallback in config is used by auth/login.js and authMiddleware.js — both will silently use the insecure secret if the env var is missing.
+AffectedFiles: src/config/config.js, src/auth/login.js, src/middleware/authMiddleware.js
+Fix: Fail fast at startup: validate all required env vars before the app starts.
+
+==============================================
+  Review complete. 14 files reviewed.
+  Critical: 11  |  Major: 18  |  Minor: 9
+==============================================
