@@ -1,0 +1,44 @@
+[
+  {
+    "file": "src/auth/login.js",
+    "line": "8",
+    "severity": "Critical",
+    "issue": "SQL injection — the email value is interpolated directly into the query string instead of using a parameterized query.",
+    "fix": "Replace with db.query('SELECT * FROM users WHERE email = $1', [email])"
+  },
+  {
+    "file": "src/auth/login.js",
+    "line": "10",
+    "severity": "Critical",
+    "issue": "Null dereference — user.rows[0] is accessed without checking whether the query returned any rows, crashing if the email is not found.",
+    "fix": "Add a guard: if (!user.rows[0]) return res.status(401).json({ error: 'Invalid credentials' })"
+  },
+  {
+    "file": "src/auth/login.js",
+    "line": "12",
+    "severity": "Critical",
+    "issue": "Plaintext password comparison — passwords should be compared using bcrypt.compare(), not direct equality.",
+    "fix": "Replace with: const match = await bcrypt.compare(password, user.rows[0].password)"
+  },
+  {
+    "file": "src/auth/login.js",
+    "line": "14",
+    "severity": "Major",
+    "issue": "JWT token has no expiry — tokens are valid indefinitely, creating a persistent session hijack risk.",
+    "fix": "Add expiresIn: jwt.sign({ userId }, secret, { expiresIn: '1h' })"
+  },
+  {
+    "file": "src/db/connection.js",
+    "line": "13",
+    "severity": "Critical",
+    "issue": "No pool error event handler — an unexpected pool error becomes an unhandled exception that crashes the Node.js process.",
+    "fix": "Add pool.on('error', (err) => { console.error('Pool error:', err); process.exit(-1); })"
+  },
+  {
+    "file": "src/config/config.js",
+    "line": "3",
+    "severity": "Critical",
+    "issue": "JWT secret has a hardcoded fallback value — if JWT_SECRET is unset in production, the app runs with a known insecure secret.",
+    "fix": "Remove the fallback: jwtSecret: process.env.JWT_SECRET and throw on startup if undefined."
+  }
+]

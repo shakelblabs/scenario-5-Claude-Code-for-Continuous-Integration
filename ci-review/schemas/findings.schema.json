@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://claimflow/ci-review/schemas/findings.schema.json",
+  "title": "ClaimFlow CI Review Findings",
+  "description": "An array of code review findings produced by the ci-review pipeline.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["file", "line", "severity", "issue", "fix"],
+    "properties": {
+      "file": {
+        "type": "string",
+        "description": "Relative path to the file the finding applies to."
+      },
+      "line": {
+        "type": "string",
+        "description": "Line number or range where the issue occurs."
+      },
+      "severity": {
+        "type": "string",
+        "description": "Severity of the finding.",
+        "enum": ["Critical", "Major", "Minor"]
+      },
+      "issue": {
+        "type": "string",
+        "description": "One-sentence description of the actual problem."
+      },
+      "fix": {
+        "type": "string",
+        "description": "Concrete suggested fix."
+      }
+    }
+  }
+}
